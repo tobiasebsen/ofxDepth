@@ -7,8 +7,17 @@ __kernel void map(__global unsigned short* depth, unsigned short imin, unsigned 
 	int2 coords = (int2)(get_global_id(0), get_global_id(1));
 	int i = coords.y * get_global_size(0) + coords.x;
 	depth[i] = (depth[i] - imin) * ((omax - omin) / (imax - imin)) + omin;
-	//depth[i] = ((depth[i] - imin) / (imax - imin) * (omax - omin) + omin);
-	//depth[i] = 0xFFFF;
+}
+
+__kernel void toPoints(__global unsigned short* depth, float2 fov, __global float4* points) {
+    int2 coords = (int2)(get_global_id(0), get_global_id(1));
+    int2 dims = (int2)(get_global_size(0), get_global_size(1));
+    float2 angle = fov * (((float2)coords / dims) - float2(0.5f));
+    int i = coords.y * dims.x + coords.x;
+    points[i].x = tan(radians(angle.x)) * depth[i];
+    points[i].y = tan(radians(angle.y)) * depth[i];
+    points[i].z = depth[i];
+    points[i].w = 0;
 }
 );
 
@@ -18,10 +27,12 @@ void ofxDepth::setup(int width, int height, int deviceNumber) {
 	opencl.setupFromOpenGL(deviceNumber);
 	opencl.loadProgramFromSource(depthProgram);
 	opencl.loadKernel("map");
+    opencl.loadKernel("toPoints");
 	if (width != 0 && height != 0) {
 		texObj.allocate(width * height * sizeof(unsigned short), GL_STREAM_DRAW);
 		depth.initFromGLObject(texObj.getId());
-		//depth.initBuffer(width * height * sizeof(unsigned short));
+        pntObj.allocate(width * height * sizeof(ofVec4f), GL_STREAM_DRAW);
+        points.initFromGLObject(pntObj.getId());
 	}
 }
 
@@ -33,11 +44,11 @@ void ofxDepth::write(ofShortPixels & p) {
 	}
 	width = p.getWidth();
 	height = p.getHeight();
-	depth.write(p.getPixels(), 0, width * height * p.getBytesPerPixel());
+	depth.write(p.getData(), 0, width * height * p.getBytesPerPixel());
 }
 
 void ofxDepth::read(ofShortPixels & p) {
-	depth.read(p.getPixels(), 0, p.getWidth() * p.getHeight() * p.getBytesPerPixel());
+	depth.read(p.getData(), 0, p.getWidth() * p.getHeight() * p.getBytesPerPixel());
 }
 
 void ofxDepth::updateTexture(ofTexture & tex) {
@@ -56,3 +67,18 @@ void ofxDepth::map(uint16_t inputMin, uint16_t inputMax, uint16_t outputMin, uin
 	kernel->run2D(width, height);
 }
 
+void ofxDepth::toPoints(float fovH, float fovV, OpenCLBuffer & points) {
+    OpenCLKernelPtr kernel = opencl.kernel("toPoints");
+    kernel->setArg(0, depth);
+    kernel->setArg(1, ofVec2f(fovH, fovV));
+    kernel->setArg(2, points);
+    kernel->run2D(width, height);
+}
+
+void ofxDepth::toPoints(float fovH, float fovV) {
+    if (!pntObj.isAllocated()) {
+        pntObj.allocate(width * height * sizeof(ofVec4f), GL_STREAM_DRAW);
+        points.initFromGLObject(pntObj.getId());
+    }
+    toPoints(fovH, fovV, points);
+}
