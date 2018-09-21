@@ -4,6 +4,40 @@
 
 string depthProgram = STRINGIFY(
 
+__kernel void flipH(__global unsigned short* input, __global unsigned short* output) {
+	int2 coords = (int2)(get_global_id(0), get_global_id(1));
+	int width = get_global_size(0);
+	if (coords.x < width/2) {
+		int i = coords.y * width + coords.x;
+		int j = coords.y * width + (width - 1 - coords.x);
+		unsigned short temp = input[j];
+		output[j] = input[i];
+		output[i] = temp;
+	}
+}
+
+__kernel void flipV(__global unsigned short* input, __global unsigned short* output) {
+	int2 coords = (int2)(get_global_id(0), get_global_id(1));
+	int width = get_global_size(0);
+	int height = get_global_size(1);
+	if (coords.y < height/2) {
+		int i = coords.y * width + coords.x;
+		int j = (height-coords.y-1) * width + coords.x;
+		unsigned short temp = input[j];
+		output[j] = input[i];
+		output[i] = temp;
+	}
+}
+
+__kernel void limit(__global unsigned short* input, __global unsigned short* output, int min, int max) {
+	int2 coords = (int2)(get_global_id(0), get_global_id(1));
+	int i = coords.y * get_global_size(0) + coords.x;
+	if (input[i] < min || input[i] > max)
+		output[i] = 0;
+	else
+		output[i] = input[i];
+}
+
 __kernel void denoise(__global unsigned short* input, __global unsigned short* output, float threshold, int neighbours) {
     int2 coords = (int2)(get_global_id(0), get_global_id(1));
     int width = get_global_size(0);
@@ -40,25 +74,45 @@ __kernel void map(__global unsigned short* depthIn, unsigned short imin, unsigne
         depthOut[i] = (( (int)depthIn[i] - imin) * ( (int)omax - omin)) / ( (int)imax - imin) + omin;
 }
 
+__kernel void accumulate(__global unsigned short* input, __global unsigned short* output, float amount) {
+	int2 coords = (int2)(get_global_id(0), get_global_id(1));
+	int i = coords.y * get_global_size(0) + coords.x;
+	if (input[i] > 0) {
+		if (output[i] == 0)
+			output[i] = input[i];
+		else
+			output[i] = output[i] * (1-amount) + input[i] * amount;
+	}
+}
+
+__kernel void subtract(__global unsigned short* input, __global unsigned short* background, __global unsigned short* output, int threshold) {
+	int2 coords = (int2)(get_global_id(0), get_global_id(1));
+	int i = coords.y * get_global_size(0) + coords.x;
+	if (background[i] == 0 || background[i] - input[i] > threshold)
+		output[i] = input[i];
+	else
+		output[i] = 0;
+}
+
 __kernel void pointsFromFov(__global unsigned short* depth, float2 fov, __global float4* points) {
     int2 coords = (int2)(get_global_id(0), get_global_id(1));
     int2 dims = (int2)(get_global_size(0), get_global_size(1));
-    float2 angle = fov * (((float2)coords / dims) - float2(0.5f));
+    float2 angle = fov * (((float2)(coords.x, coords.y) / (float2)(dims.x, dims.y)) - (float2)(0.5f));
     int i = coords.y * dims.x + coords.x;
     points[i].x = tan(radians(angle.x)) * depth[i];
     points[i].y = tan(radians(angle.y)) * depth[i];
     points[i].z = -depth[i];
-    points[i].w = 0;
+    points[i].w = 1.f;
 }
                                 
 __kernel void pointsFromTable(__global unsigned short* depth, __global float2* table, __global float4* points) {
     int2 coords = (int2)(get_global_id(0), get_global_id(1));
     int i = coords.y * get_global_size(0) + coords.x;
-    unsigned short d = depth[i];
+    float d = (float)depth[i];
     points[i].x = table[i].x * d;
     points[i].y = table[i].y * d;
-    points[i].z = -d;
-    points[i].w = 0.f;
+    points[i].z = d == 0 ? 10000 : -d; // HACK: Keeps zero-points away from view
+    points[i].w = 1.f;
 };
 
 __kernel void transform(__global float4 *input, __global float4 *output, __global float4 *mat) {
@@ -70,13 +124,33 @@ __kernel void transform(__global float4 *input, __global float4 *output, __globa
     output[i].x = mat[0].x * v.x + mat[1].x * v.y + mat[2].x * v.z + mat[3].x;
     output[i].y = mat[0].y * v.x + mat[1].y * v.y + mat[2].y * v.z + mat[3].y;
     output[i].z = mat[0].z * v.x + mat[1].z * v.y + mat[2].z * v.z + mat[3].z;
+	output[i].z = 1.f;
 }
                                 
 );
 
+//////////////////////////////////////////////////
+
+void ofxDepthTable::allocate(int width, int height) {
+	clBuf.initBuffer(width * height * sizeof(ofVec2f));
+}
+
+bool ofxDepthTable::isAllocated() {
+	return clBuf != nullptr;
+}
+
+void ofxDepthTable::write(ofFloatPixels & pixels) {
+	if (!isAllocated())
+		allocate(pixels.getWidth(), pixels.getHeight());
+	clBuf.write(pixels.getData(), 0, pixels.getNumChannels() * pixels.getBytesPerChannel() * pixels.getWidth() * pixels.getHeight());
+}
+
+//////////////////////////////////////////////////
+
 void ofxDepthImage::allocate(int width, int height) {
     this->width = width;
     this->height = height;
+	ofxDepth.setup();
     glBuf.allocate(width * height * sizeof(unsigned short), GL_STREAM_DRAW);
     clBuf.initFromGLObject(glBuf.getId());
 }
@@ -100,6 +174,8 @@ void ofxDepthImage::write(ofShortPixels & pixels) {
 }
 
 void ofxDepthImage::read(ofShortPixels & pixels) {
+	if (!pixels.isAllocated())
+		pixels.allocate(getWidth(), getHeight(), 1);
     clBuf.read(pixels.getData(), 0, pixels.getWidth() * pixels.getHeight() * pixels.getBytesPerPixel());
 }
 
@@ -114,11 +190,36 @@ void ofxDepthImage::update() {
 }
 
 void ofxDepthImage::draw(float x, float y) {
-    tex.draw(x, y);
+	if (tex.isAllocated())
+		tex.draw(x, y);
 }
 
 void ofxDepthImage::draw(float x, float y, float w, float h) {
-    tex.draw(x, y, w, h);
+	if (tex.isAllocated())
+		tex.draw(x, y, w, h);
+}
+
+void ofxDepthImage::flipHorizontal() {
+	OpenCLKernelPtr kernel = ofxDepth.getKernel("flipH");
+	kernel->setArg(0, getCLBuffer());
+	kernel->setArg(1, getCLBuffer());
+	kernel->run2D(width, height);
+}
+
+void ofxDepthImage::flipVertical() {
+	OpenCLKernelPtr kernel = ofxDepth.getKernel("flipV");
+	kernel->setArg(0, getCLBuffer());
+	kernel->setArg(1, getCLBuffer());
+	kernel->run2D(width, height);
+}
+
+void ofxDepthImage::limit(int min, int max) {
+	OpenCLKernelPtr kernel = ofxDepth.getKernel("limit");
+	kernel->setArg(0, getCLBuffer());
+	kernel->setArg(1, getCLBuffer());
+	kernel->setArg(2, min);
+	kernel->setArg(3, max);
+	kernel->run2D(width, height);
 }
 
 void ofxDepthImage::denoise(float threshold, int neighbours, ofxDepthImage &outputImage) {
@@ -149,6 +250,31 @@ void ofxDepthImage::map(uint16_t inputMin, uint16_t inputMax, uint16_t outputMin
     kernel->run2D(getWidth(), getHeight());
 }
 
+void ofxDepthImage::accumulate(ofxDepthImage & outputImage, float amount) {
+
+	if (!outputImage.isAllocated())
+		outputImage.allocate(getWidth(), getHeight());
+
+	OpenCLKernelPtr kernel = ofxDepth.getKernel("accumulate");
+	kernel->setArg(0, getCLBuffer());
+	kernel->setArg(1, outputImage.getCLBuffer());
+	kernel->setArg(2, amount);
+	kernel->run2D(getWidth(), getHeight());
+}
+
+void ofxDepthImage::subtract(ofxDepthImage & background, int threshold) {
+
+	if (!background.isAllocated())
+		return;
+
+	OpenCLKernelPtr kernel = ofxDepth.getKernel("subtract");
+	kernel->setArg(0, getCLBuffer());
+	kernel->setArg(1, background.getCLBuffer());
+	kernel->setArg(2, getCLBuffer());
+	kernel->setArg(3, threshold);
+	kernel->run2D(getWidth(), getHeight());
+}
+
 void ofxDepthImage::map(uint16_t inputMin, uint16_t inputMax, uint16_t outputMin, uint16_t outputMax) {
     map(inputMin, inputMax,  outputMin, outputMax, *this);
 }
@@ -167,6 +293,20 @@ void ofxDepthImage::toPoints(float fovH, float fovV, ofxDepthPoints & points) {
     points.setCount(getNumPixels());
 }
 
+void ofxDepthImage::toPoints(ofxDepthTable & table, ofxDepthPoints & points) {
+
+	if (!points.isAllocated())
+		points.allocate(getNumPixels());
+
+	OpenCLKernelPtr kernel = ofxDepth.getKernel("pointsFromTable");
+	kernel->setArg(0, getCLBuffer());
+	kernel->setArg(1, table.getCLBuffer());
+	kernel->setArg(2, points.getCLBuffer());
+	kernel->run2D(getWidth(), getHeight());
+
+	points.setCount(getNumPixels());
+}
+
 //////////////////////////////////////////////////
 
 void ofxDepthData::allocate(int size) {
@@ -183,18 +323,22 @@ int ofxDepthData::countZeros() {
 }
 
 int ofxDepthData::removeZeros(bool resize) {
-    removeZeros(resize, *this);
+    return removeZeros(resize, *this);
 }
 
 int ofxDepthData::removeZeros(bool resize, ofxDepthData &outputData) {
-    outputData.allocate(getSize());
-    ofVec4f * pData = outputData.getData().data();
+	ofVec4f * inData = getData().data();
+	outputData.allocate(getSize());
+    ofVec4f * outData = outputData.getData().data();
     int nz = 0;
-    for (ofVec4f & p : data) {
-        if (p.x != 0 || p.y != 0 || p.z != 0) {
-            data[nz] = p;
+	size_t size = data.size();
+    for (int i=0; i<size; i++) {
+        if (inData->x != 0 || inData->y != 0 || inData->z != 0) {
+            *outData = *inData;
+			outData++;
             nz++;
         }
+		inData++;
     }
     outputData.setCount(nz);
     if (resize)
@@ -206,8 +350,9 @@ int ofxDepthData::removeZeros(bool resize, ofxDepthData &outputData) {
 
 void ofxDepthPoints::allocate(int size) {
     this->size = 0;
+	ofxDepth.setup();
     glBuf.allocate(size * sizeof(ofVec4f), GL_STREAM_DRAW);
-    vbo.setVertexBuffer(glBuf, 3, sizeof(ofVec4f));
+    vbo.setVertexBuffer(glBuf, 4, sizeof(ofVec4f));
     clBuf.initFromGLObject(glBuf.getId());
 }
 
@@ -289,35 +434,80 @@ void ofxDepthPoints::transform(const ofMatrix4x4 &mat) {
     transform(mat, *this);
 }
 
+ofMesh ofxDepthPoints::makeFrustum(float fovH, float fovV, float clipNear, float clipFar) {
+	ofMesh mesh;
+	mesh.setMode(OF_PRIMITIVE_LINES);
+
+	float tanH = tan(0.5 * fovH * DEG_TO_RAD);
+	float tanV = tan(0.5 * fovV * DEG_TO_RAD);
+
+	ofVec3f cornerFar;
+	cornerFar.x = tanH * clipFar;
+	cornerFar.y = tanV * clipFar;
+	cornerFar.z = -clipFar;
+
+	mesh.addVertex(cornerFar);
+	mesh.addVertex(cornerFar * ofVec3f(-1, 1, 1));
+	mesh.addVertex(cornerFar * ofVec3f(-1, -1, 1));
+	mesh.addVertex(cornerFar * ofVec3f(1, -1, 1));
+
+	ofVec3f cornerNear;
+	cornerNear.x = tanH * clipNear;
+	cornerNear.y = tanV * clipNear;
+	cornerNear.z = -clipNear;
+
+	mesh.addVertex(cornerNear);
+	mesh.addVertex(cornerNear * ofVec3f(-1, 1, 1));
+	mesh.addVertex(cornerNear * ofVec3f(-1, -1, 1));
+	mesh.addVertex(cornerNear * ofVec3f(1, -1, 1));
+
+	mesh.addVertex(ofVec3f(0.f));
+
+	unsigned int indices[] = {0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 8, 0, 8, 1, 8, 2, 8, 3};
+	mesh.addIndices(indices, sizeof(indices)/sizeof(unsigned int));
+
+	return mesh;
+}
+
 //////////////////////////////////////////////////
 
 void ofxDepthCore::setup(int deviceNumber) {
-
     if (isSetup())
         return;
-
 	opencl.setupFromOpenGL(deviceNumber);
-	opencl.loadProgramFromSource(depthProgram);
-	opencl.loadKernel("map");
-    opencl.loadKernel("pointsFromFov");
-    opencl.loadKernel("pointsFromTable");
-    opencl.loadKernel("transform");
-    opencl.loadKernel("denoise");
+	loadKernels();
 }
 
-void ofxDepthCore::setup(string vendorName, string deviceName) {
-    int n = opencl.getDeviceInfos();
+bool ofxDepthCore::setup(string vendorName, string deviceName) {
+	if (isSetup())
+		return true;
+	int n = opencl.getDeviceInfos();
     for (int i=0; i<n; i++) {
-        if ((string((char*)opencl.deviceInfo[i].vendorName) == vendorName && deviceName == "") ||
+        if ((string((char*)opencl.deviceInfo[i].vendorName).find(vendorName) != string::npos && deviceName == "") ||
             string((char*)opencl.deviceInfo[i].deviceName) == deviceName) {
             setup(i);
-            return;
+            return true;
         }
     }
+	return false;
 }
 
 bool ofxDepthCore::isSetup() {
     return opencl.getDevice() != nullptr;
+}
+
+void ofxDepthCore::loadKernels() {
+	opencl.loadProgramFromSource(depthProgram);
+	opencl.loadKernel("flipH");
+	opencl.loadKernel("flipV");
+	opencl.loadKernel("limit");
+	opencl.loadKernel("map");
+	opencl.loadKernel("accumulate");
+	opencl.loadKernel("subtract");
+	opencl.loadKernel("pointsFromFov");
+	opencl.loadKernel("pointsFromTable");
+	opencl.loadKernel("transform");
+	opencl.loadKernel("denoise");
 }
 
 OpenCL & ofxDepthCore::getCL() {

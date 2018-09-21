@@ -14,6 +14,7 @@ class ofxDepthPoints;
 class ofxDepthTable {
 public:
     void allocate(int width, int height);
+	bool isAllocated();
     
     void write(ofFloatPixels & entries);
 
@@ -58,10 +59,16 @@ public:
     void draw(float x, float y);
     void draw(float x, float y, float w, float h);
     
+	void flipHorizontal();
+	void flipVertical();
+	void limit(int min, int max);
     void denoise(float threshold, int neighbours = 1);
     void denoise(float threshold, int neighbours, ofxDepthImage & outputImage);
     void map(uint16_t inputMin, uint16_t inputMax, uint16_t outputMin = 0, uint16_t outputMax = USHRT_MAX);
     void map(uint16_t inputMin, uint16_t inputMax, uint16_t outputMin, uint16_t outputMax, ofxDepthImage & outputImage);
+	void accumulate(ofxDepthImage & outputImage, float amount);
+	void subtract(ofxDepthImage & background, int threshold);
+
     void toPoints(float fovH, float fovV, ofxDepthPoints & points);
     void toPoints(ofxDepthTable & depthTable, ofxDepthPoints & points);
 
@@ -142,7 +149,9 @@ public:
     void transform(const ofMatrix4x4 & mat);
     void transform(const ofMatrix4x4 & mat, ofxDepthPoints & outputPoints);
     
-    OpenCLBuffer & getCLBuffer() {
+	static ofMesh makeFrustum(float fovH, float fovV, float clipNear, float clipFar);
+	
+	OpenCLBuffer & getCLBuffer() {
         return clBuf;
     }
 
@@ -167,8 +176,9 @@ public:
     }
 
 	void setup(int deviceNumber = -1);
-    void setup(string vendorName, string deviceName = "");
+    bool setup(string vendorName, string deviceName = "");
     bool isSetup();
+	void loadKernels();
     
     OpenCL & getCL();
     OpenCLKernelPtr getKernel(string name);
