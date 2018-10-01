@@ -174,6 +174,8 @@ void ofxDepthImage::write(ofShortPixels & pixels) {
 }
 
 void ofxDepthImage::read(ofShortPixels & pixels) {
+	if (!isAllocated())
+		return;
 	if (!pixels.isAllocated())
 		pixels.allocate(getWidth(), getHeight(), 1);
     clBuf.read(pixels.getData(), 0, pixels.getWidth() * pixels.getHeight() * pixels.getBytesPerPixel());
@@ -485,8 +487,11 @@ bool ofxDepthCore::setup(string vendorName, string deviceName) {
     for (int i=0; i<n; i++) {
         if ((string((char*)opencl.deviceInfo[i].vendorName).find(vendorName) != string::npos && deviceName == "") ||
             string((char*)opencl.deviceInfo[i].deviceName) == deviceName) {
-            setup(i);
-            return true;
+			ofLog() << "Setting up OpenCL...";
+			ofLog() << "Vendor: " << opencl.deviceInfo[i].vendorName;
+			ofLog() << "Device: " << opencl.deviceInfo[i].deviceName;
+			setup(i);
+			return true;
         }
     }
 	return false;
