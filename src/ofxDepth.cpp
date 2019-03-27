@@ -126,38 +126,80 @@ __kernel void transform(__global float4 *input, __global float4 *output, __globa
     output[i].z = mat[0].z * v.x + mat[1].z * v.y + mat[2].z * v.z + mat[3].z;
 	output[i].z = 1.f;
 }
+
+__kernel void pointsToIndices(__global float4* vertices, __global unsigned int* indices, __global float4* normals, float maxFaceDist) {
+	int2 coords = (int2)(get_global_id(0), get_global_id(1));
+	int2 dim = (int2)(get_global_size(0), get_global_size(1));
+	int i = (coords.y * dim.x + coords.x) * 6;
+
+	int c1 = coords.y * dim.x + coords.x;
+	int c2 = coords.y * dim.x + coords.x + 1;
+	int c3 = (coords.y + 1) * dim.x + coords.x + 1;
+	int c4 = (coords.y + 1) * dim.x + coords.x;
+
+	float4 v1 = vertices[c1];
+	float4 v2 = vertices[c2];
+	float4 v3 = vertices[c3];
+	float4 v4 = vertices[c4];
+
+	if (v1.z != 0.0 && v4.z != 0.0 && v2.z != 0.0 && fabs(v1.z - v2.z) < maxFaceDist && fabs(v1.z - v4.z) < maxFaceDist && coords.x < dim.x-1 && coords.y < dim.y-1) {
+		indices[i+0] = c1;
+		indices[i+1] = c4;
+		indices[i+2] = c2;
+		normals[c1] = normalize(cross(v2-v1, v4-v1));
+	}
+	else {
+		indices[i+0] = 0;
+		indices[i+1] = 0;
+		indices[i+2] = 0;
+	}
+	if (v2.z != 0.0 && v4.z != 0.0 && v3.z != 0.0 && fabs(v2.z - v3.z) < maxFaceDist && fabs(v3.z - v4.z) < maxFaceDist && coords.x < dim.x-1 && coords.y < dim.y-1) {
+		indices[i+3] = c2;
+		indices[i+4] = c4;
+		indices[i+5] = c3;
+	}	
+	else {
+		indices[i+3] = 0;
+		indices[i+4] = 0;
+		indices[i+5] = 0;
+	}
+}
                                 
 );
+
+
+//////////////////////////////////////////////////
+
+OpenCLBuffer & ofxDepthBuffer::getCLBuffer() {
+	return clBuf;
+}
+
+ofBufferObject & ofxDepthBuffer::getGLBuffer() {
+	return glBuf;
+}
+
+void ofxDepthBuffer::allocate(int numElements) {
+	glBuf.allocate(numElements * getBytesPerElement(), GL_STREAM_DRAW);
+	clBuf.initFromGLObject(glBuf.getId());
+}
+
+bool ofxDepthBuffer::isAllocated() const {
+	return glBuf.isAllocated();
+}
+
+void ofxDepthBuffer::write(void * data, int numElements) {
+	if (!isAllocated())
+		allocate(numElements);
+	clBuf.write(data, 0, numElements * getBytesPerElement());
+}
 
 //////////////////////////////////////////////////
 
 void ofxDepthTable::allocate(int width, int height) {
-	clBuf.initBuffer(width * height * sizeof(ofVec2f));
-}
-
-bool ofxDepthTable::isAllocated() {
-	return clBuf != nullptr;
-}
-
-void ofxDepthTable::write(ofFloatPixels & pixels) {
-	if (!isAllocated())
-		allocate(pixels.getWidth(), pixels.getHeight());
-	clBuf.write(pixels.getData(), 0, pixels.getNumChannels() * pixels.getBytesPerChannel() * pixels.getWidth() * pixels.getHeight());
+	ofxDepthBuffer::allocate(width * height);
 }
 
 //////////////////////////////////////////////////
-
-void ofxDepthImage::allocate(int width, int height) {
-    this->width = width;
-    this->height = height;
-	ofxDepth.setup();
-    glBuf.allocate(width * height * sizeof(unsigned short), GL_STREAM_DRAW);
-    clBuf.initFromGLObject(glBuf.getId());
-}
-
-bool ofxDepthImage::isAllocated() const {
-    return glBuf.isAllocated();
-}
 
 void ofxDepthImage::load(string filepath) {
     ofxDepth.setup();
@@ -165,12 +207,6 @@ void ofxDepthImage::load(string filepath) {
     ofLoadImage(pixels, filepath);
     ofShortPixels spixels = pixels.getChannel(0);
     write(spixels);
-}
-
-void ofxDepthImage::write(ofShortPixels & pixels) {
-    if (!isAllocated())
-        allocate(pixels.getWidth(), pixels.getHeight());
-    clBuf.write(pixels.getData(), 0, pixels.getWidth() * pixels.getHeight() * pixels.getBytesPerPixel());
 }
 
 void ofxDepthImage::read(ofShortPixels & pixels) {
@@ -183,7 +219,7 @@ void ofxDepthImage::read(ofShortPixels & pixels) {
 
 void ofxDepthImage::update(ofTexture & tex) {
     glBuf.bind(GL_PIXEL_UNPACK_BUFFER);
-    tex.loadData((unsigned short*)NULL, width, height, GL_LUMINANCE);
+    tex.loadData((unsigned short*)NULL, getWidth(), getHeight(), GL_LUMINANCE);
     glBuf.unbind(GL_PIXEL_UNPACK_BUFFER);
 }
 
@@ -205,14 +241,14 @@ void ofxDepthImage::flipHorizontal() {
 	OpenCLKernelPtr kernel = ofxDepth.getKernel("flipH");
 	kernel->setArg(0, getCLBuffer());
 	kernel->setArg(1, getCLBuffer());
-	kernel->run2D(width, height);
+	kernel->run2D(getWidth(), getHeight());
 }
 
 void ofxDepthImage::flipVertical() {
 	OpenCLKernelPtr kernel = ofxDepth.getKernel("flipV");
 	kernel->setArg(0, getCLBuffer());
 	kernel->setArg(1, getCLBuffer());
-	kernel->run2D(width, height);
+	kernel->run2D(getWidth(), getHeight());
 }
 
 void ofxDepthImage::limit(int min, int max) {
@@ -221,7 +257,7 @@ void ofxDepthImage::limit(int min, int max) {
 	kernel->setArg(1, getCLBuffer());
 	kernel->setArg(2, min);
 	kernel->setArg(3, max);
-	kernel->run2D(width, height);
+	kernel->run2D(getWidth(), getHeight());
 }
 
 void ofxDepthImage::denoise(float threshold, int neighbours, ofxDepthImage &outputImage) {
@@ -230,7 +266,7 @@ void ofxDepthImage::denoise(float threshold, int neighbours, ofxDepthImage &outp
     kernel->setArg(1, outputImage.getCLBuffer());
     kernel->setArg(2, threshold);
     kernel->setArg(3, neighbours);
-    kernel->run2D(width, height);
+    kernel->run2D(getWidth(), getHeight());
 }
 
 void ofxDepthImage::denoise(float threshold, int neighbours) {
@@ -284,29 +320,25 @@ void ofxDepthImage::map(uint16_t inputMin, uint16_t inputMax, uint16_t outputMin
 void ofxDepthImage::toPoints(float fovH, float fovV, ofxDepthPoints & points) {
     
     if (!points.isAllocated())
-        points.allocate(getNumPixels());
+        points.allocate(getNumElements());
 
     OpenCLKernelPtr kernel = ofxDepth.getKernel("pointsFromFov");
     kernel->setArg(0, getCLBuffer());
     kernel->setArg(1, ofVec2f(fovH, fovV));
     kernel->setArg(2, points.getCLBuffer());
     kernel->run2D(getWidth(), getHeight());
-    
-    points.setCount(getNumPixels());
 }
 
 void ofxDepthImage::toPoints(ofxDepthTable & table, ofxDepthPoints & points) {
 
 	if (!points.isAllocated())
-		points.allocate(getNumPixels());
+		points.allocate(getNumElements());
 
 	OpenCLKernelPtr kernel = ofxDepth.getKernel("pointsFromTable");
 	kernel->setArg(0, getCLBuffer());
 	kernel->setArg(1, table.getCLBuffer());
 	kernel->setArg(2, points.getCLBuffer());
 	kernel->run2D(getWidth(), getHeight());
-
-	points.setCount(getNumPixels());
 }
 
 //////////////////////////////////////////////////
@@ -350,16 +382,10 @@ int ofxDepthData::removeZeros(bool resize, ofxDepthData &outputData) {
 
 //////////////////////////////////////////////////
 
-void ofxDepthPoints::allocate(int size) {
-    this->size = 0;
+void ofxDepthPoints::allocate(int numVertices) {
 	ofxDepth.setup();
-    glBuf.allocate(size * sizeof(ofVec4f), GL_STREAM_DRAW);
-    vbo.setVertexBuffer(glBuf, 4, sizeof(ofVec4f));
-    clBuf.initFromGLObject(glBuf.getId());
-}
-
-bool ofxDepthPoints::isAllocated() {
-    return glBuf.isAllocated();
+    ofxDepthBuffer::allocate(numVertices);
+    vbo.setVertexBuffer(glBuf, getNumTypePerElement(), getBytesPerElement());
 }
 
 void ofxDepthPoints::load(string filepath) {
@@ -389,11 +415,11 @@ void ofxDepthPoints::load(string filepath) {
 
 void ofxDepthPoints::read(ofxDepthData & data) {
     read(data.getData());
-    data.setCount(getCount());
+    data.setCount(getNumElements());
 }
 
 void ofxDepthPoints::read(vector<ofVec4f> & points) {
-    points.resize(getCount());
+    points.resize(getNumElements());
     clBuf.read(points.data(), 0, points.size() * sizeof(ofVec4f));
 }
 
@@ -407,11 +433,38 @@ void ofxDepthPoints::write(vector<ofVec4f> & points) {
 
 void ofxDepthPoints::write(vector<ofVec4f> & points, int count) {
     clBuf.write(points.data(), 0, count * sizeof(ofVec4f));
-    this->count = count;
+}
+
+void ofxDepthPoints::updateMesh(int width, int height, float noiseThreshold) {
+
+	if (!indBuf.isAllocated()) {
+		indBuf.allocate(width * height * 6);
+		vbo.setIndexBuffer(indBuf.getGLBuffer());
+	}
+	if (!norBuf.isAllocated()) {
+		norBuf.allocate(getNumElements());
+		vbo.setNormalBuffer(norBuf.getGLBuffer(), norBuf.getBytesPerElement());
+	}
+
+	OpenCLKernelPtr kernel = ofxDepth.getKernel("pointsToIndices");
+	kernel->setArg(0, getCLBuffer());
+	kernel->setArg(1, indBuf.getCLBuffer());
+	kernel->setArg(2, norBuf.getCLBuffer());
+	kernel->setArg(3, noiseThreshold);
+	kernel->run2D(width, height);
 }
 
 void ofxDepthPoints::draw() {
-    vbo.draw(GL_POINTS, 0, count);
+	vbo.disableIndices();
+    vbo.draw(GL_POINTS, 0, getNumElements());
+}
+
+void ofxDepthPoints::drawMesh() {
+	if (indBuf.isAllocated()) {
+		vbo.enableIndices();
+		vbo.enableNormals();
+		vbo.drawElements(GL_TRIANGLES, indBuf.getNumElements());
+	}
 }
 
 void ofxDepthPoints::transform(const ofMatrix4x4 &mat, ofxDepthPoints &outputPoints) {
@@ -429,7 +482,7 @@ void ofxDepthPoints::transform(const ofMatrix4x4 &mat, ofxDepthPoints &outputPoi
     kernel->setArg(0, getCLBuffer());
     kernel->setArg(1, outputPoints.getCLBuffer());
     kernel->setArg(2, matrix);
-    kernel->run1D(count);
+    kernel->run1D(getNumElements());
 }
 
 void ofxDepthPoints::transform(const ofMatrix4x4 &mat) {
@@ -513,6 +566,7 @@ void ofxDepthCore::loadKernels() {
 	opencl.loadKernel("pointsFromTable");
 	opencl.loadKernel("transform");
 	opencl.loadKernel("denoise");
+	opencl.loadKernel("pointsToIndices");
 }
 
 OpenCL & ofxDepthCore::getCL() {

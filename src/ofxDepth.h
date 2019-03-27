@@ -7,23 +7,72 @@ using namespace msa;
 class ofxDepthPoints;
 
 //////////////////////////////////////////////////
+// DEPTH BUFFER
+//
+// Base class for OpenCL-OpenGL interop buffer
+class ofxDepthBuffer {
+public:
+	virtual int getBytesPerElement() const = 0;
+	virtual int getNumElements() const = 0;
+	virtual int getNumTypePerElement() const = 0;
+	OpenCLBuffer & getCLBuffer();
+	ofBufferObject & getGLBuffer();
+
+	void allocate(int numElements);
+	bool isAllocated() const;
+
+protected:
+	void write(void * data, int numElements);
+	void read(void * data, int numElements);
+
+	ofBufferObject glBuf;
+	OpenCLBuffer clBuf;
+};
+
+template<typename T, class E>
+class ofxDepthBufferT : public ofxDepthBuffer {
+public:
+	int getBytesPerElement() const {
+		return sizeof(E);
+	}
+	int getNumElements() const {
+		return glBuf.size() / sizeof(T);
+	}
+	int getNumTypePerElement() const {
+		return sizeof(E) / sizeof(T);
+	}
+	void allocate(int numElements) {
+		ofxDepthBuffer::allocate(numElements);
+	}
+	void allocate(int width, int height) {
+		ofxDepthBuffer::allocate(width * height);
+		dimSize[0] = width;
+		dimSize[1] = height;
+	}
+	void write(T * data, int numElements) {
+		ofxDepthBuffer::write((void*)data, numElements);
+		dimSize[0] = numElements;
+	}
+	void write(vector<E> & v) {
+		write(v.data(), v.size());
+	}
+	void write(ofPixels_<T> & p) {
+		write(p.getData(), p.getTotalBytes() / p.getBytesPerPixel());
+		dimSize[0] = p.getWidth();
+		dimSize[1] = p.getHeight();
+	}
+protected:
+	int dimSize[3];
+};
+
+//////////////////////////////////////////////////
 // DEPTH TABLE
 //
 // Depth (z) to world position table
 
-class ofxDepthTable {
+class ofxDepthTable : public ofxDepthBufferT<float, ofVec2f> {
 public:
     void allocate(int width, int height);
-	bool isAllocated();
-    
-    void write(ofFloatPixels & entries);
-
-    OpenCLBuffer & getCLBuffer() {
-        return clBuf;
-    }
-
-protected:
-    OpenCLBuffer clBuf;
 };
 
 
@@ -32,25 +81,19 @@ protected:
 //
 // The raw image from a depth camera
 
-class ofxDepthImage {
+class ofxDepthImage : public ofxDepthBufferT<unsigned short, unsigned short> {
 public:
-
-    void allocate(int width, int height);
-    bool isAllocated() const;
     
     int getWidth() const {
-        return width;
+        return dimSize[0];
     }
     int getHeight() const {
-        return height;
-    }
-    int getNumPixels() const {
-        return width * height;
+        return dimSize[1];
     }
     
     void load(string filepath);
 
-    void write(ofShortPixels & pixels);
+    //void write(ofShortPixels & pixels);
     void read(ofShortPixels & pixels);
     
     void update();
@@ -72,15 +115,7 @@ public:
     void toPoints(float fovH, float fovV, ofxDepthPoints & points);
     void toPoints(ofxDepthTable & depthTable, ofxDepthPoints & points);
 
-    OpenCLBuffer & getCLBuffer() {
-        return clBuf;
-    }
-
 protected:
-    int width;
-    int height;
-    ofBufferObject glBuf;
-    OpenCLBuffer clBuf;
     ofTexture tex;
 };
 
@@ -120,21 +155,10 @@ protected:
 //////////////////////////////////////////////////
 // DEPTH POINTS
 
-class ofxDepthPoints {
+class ofxDepthPoints : public ofxDepthBufferT<float, ofVec4f> {
 public:
 
-    void allocate(int size);
-    bool isAllocated();
-    
-    int getSize() const {
-        return size;
-    }
-    int getCount() const {
-        return count;
-    }
-    void setCount(int count) {
-        this->count = count;
-    }
+    void allocate(int numVertices);
     
     void load(string filepath);
 
@@ -143,23 +167,20 @@ public:
     void write(ofxDepthData & data);
     void write(vector<ofVec4f> & points);
     void write(vector<ofVec4f> & points, int count);
+
+	void updateMesh(int width, int height, float noiseThreshold = 10.f);
     
     void draw();
+	void drawMesh();
     
     void transform(const ofMatrix4x4 & mat);
     void transform(const ofMatrix4x4 & mat, ofxDepthPoints & outputPoints);
     
 	static ofMesh makeFrustum(float fovH, float fovV, float clipNear, float clipFar);
-	
-	OpenCLBuffer & getCLBuffer() {
-        return clBuf;
-    }
 
 protected:
-    int size;
-    int count;
-    ofBufferObject glBuf;
-    OpenCLBuffer clBuf;
+	ofxDepthBufferT<ofIndexType,ofIndexType> indBuf;
+	ofxDepthBufferT<float, ofVec4f> norBuf;
     ofVbo vbo;
     
     OpenCLBufferManagedT<ofVec4f> matrix;
