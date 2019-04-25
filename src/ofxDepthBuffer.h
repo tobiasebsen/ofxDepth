@@ -30,7 +30,7 @@ protected:
 	OpenCLBuffer clBuf;
 };
 
-template<typename T, class E>
+template<typename T, class E = T>
 class ofxDepthBufferT : public ofxDepthBuffer {
 public:
 	int getBytesPerType() const {
@@ -40,7 +40,7 @@ public:
 		return sizeof(E);
 	}
 	int getNumElements() const {
-		return glBuf.size() / sizeof(T);
+		return glBuf.size() / sizeof(E);
 	}
 	int getNumTypePerElement() const {
 		return sizeof(E) / sizeof(T);

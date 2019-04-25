@@ -5,16 +5,15 @@
 #define STRINGIFY(A) #A
 
 string depthPointsProgram = STRINGIFY(
-	__kernel void transform(__global float4 *input, __global float4 *output, __global float4 *mat) {
-	int2 coords = (int2)(get_global_id(0), get_global_id(1));
-	int width = get_global_size(0);
-	int i = coords.y * width + coords.x;
+
+__kernel void transform(__global float4 *input, __global float4 *output, __global float4 *mat) {
+	int i = get_global_id(0);
 	float4 v = input[i];
 
 	output[i].x = mat[0].x * v.x + mat[1].x * v.y + mat[2].x * v.z + mat[3].x;
 	output[i].y = mat[0].y * v.x + mat[1].y * v.y + mat[2].y * v.z + mat[3].y;
 	output[i].z = mat[0].z * v.x + mat[1].z * v.y + mat[2].z * v.z + mat[3].z;
-	output[i].z = 1.f;
+	output[i].w = 1.f;
 }
 
 __kernel void smoothNormals(__global float4 *input, __global float4 *output) {
